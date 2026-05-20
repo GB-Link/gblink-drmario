@@ -784,7 +784,7 @@ class OnlineDrMario extends React.Component {
             <button onClick={(e) => this.handleStartClick()} className="btn btn-lg btn-secondary">Connect</button>
             <br/>
             <br/>
-            <small>Version: 0.1</small>
+            <small>Version: 0.2</small>
           </div>
         )
       } else if (this.state.state === this.StateConnect) {
@@ -796,7 +796,7 @@ class OnlineDrMario extends React.Component {
             <hr />
             <SelectGame onCreateGame={(name) => this.handleCreateGame(name)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
             <br/>
-            <small>Version: 0.1</small>
+            <small>Version: 0.2</small>
           </div>
         )
       } else if (this.state.state === this.StateConnecting) {
