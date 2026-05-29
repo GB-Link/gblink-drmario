@@ -5,6 +5,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import './index.css';
 
 import { Serial } from './serial.js';
+import { SerialWS } from './serial_ws.js';
 import { GBWebsocket } from './gbwebsocket.js';
 import { Lobby } from './lobby.js';
 import { SelectGame } from './selectgame.js';
@@ -69,8 +70,8 @@ class OnlineDrMario extends React.Component {
     this.opponentVirusCountRef = { current: 4 };
   }
 
-  handleStartClick() {
-    this.serial = new Serial();
+  handleStartClick(kind = 'usb') {
+    this.serial = (kind === 'serial') ? new SerialWS() : new Serial();
     this.setState({
       state: this.StateConnecting
     });
@@ -82,7 +83,7 @@ class OnlineDrMario extends React.Component {
     }).catch(c => {
       this.setState({
         state: this.StateStart,
-        errorMessage: "Failed to connect USB device"
+        errorMessage: `Failed to connect ${kind === 'serial' ? 'serial port' : 'USB device'}`
       });
     });
   }
@@ -771,7 +772,9 @@ class OnlineDrMario extends React.Component {
   }
 
   render() {
-    if (navigator.usb) {
+    // Prefer WebUSB; fall back to WebSerial (Firefox 151+, or Chromium with WebUSB disabled).
+    const transport = ('usb' in navigator) ? 'usb' : (('serial' in navigator) ? 'serial' : null);
+    if (transport) {
       if (this.state.state === this.StateStart) {
         return (
           <div className="connect">
@@ -781,10 +784,12 @@ class OnlineDrMario extends React.Component {
             <hr />
             <h4>Connect your Game Boy</h4>
             <p>Connect your Game Boy with the USB to Game Link adapter and click "Connect".</p>
-            <button onClick={(e) => this.handleStartClick()} className="btn btn-lg btn-secondary">Connect</button>
+            <button
+              onClick={(e) => this.handleStartClick(transport)}
+              className="btn btn-lg btn-secondary">{transport === 'serial' ? 'Connect Serial' : 'Connect USB'}</button>
             <br/>
             <br/>
-            <small>Version: 0.2</small>
+            <small>Version: 0.3.0</small>
           </div>
         )
       } else if (this.state.state === this.StateConnect) {
@@ -796,7 +801,7 @@ class OnlineDrMario extends React.Component {
             <hr />
             <SelectGame onCreateGame={(name) => this.handleCreateGame(name)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
             <br/>
-            <small>Version: 0.2</small>
+            <small>Version: 0.3.0</small>
           </div>
         )
       } else if (this.state.state === this.StateConnecting) {
@@ -868,7 +873,10 @@ class OnlineDrMario extends React.Component {
       }
     } else {
       return (
-        <h2>Sorry, your browser does not support WebUSB!</h2>
+        <div>
+          <h2>Sorry, your browser supports neither WebUSB nor WebSerial!</h2>
+          <p>Use Chrome/Edge (WebUSB or WebSerial) or Firefox 151+ (WebSerial).</p>
+        </div>
       )
     }
   }
