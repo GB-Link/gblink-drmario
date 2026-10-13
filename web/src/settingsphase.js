@@ -51,69 +51,71 @@ class SettingsPhase extends React.Component {
       <div>
         <h2>Game Settings</h2>
 
-        <h3>
-          Virus Level 
-          {phase === 'virus_level' && countdown > 0 && ` (${countdown}s remaining)`}
-        </h3>
-        <p><strong>Your selection:</strong> Level {isNaN(myLevel) ? 0 : myLevel} ({myVirusCount} viruses)</p>
-        <p><strong>Opponent:</strong> Level {isNaN(oppLevel) ? 0 : oppLevel} ({oppVirusCount} viruses)</p>
-        {phase === 'virus_level' && (
-          <p>Adjust virus level on your Game Boy</p>
-        )}
-        <p>&nbsp;</p>
+        <div className={`settings-section${phase === 'virus_level' ? ' settings-section-active' : ''}`}>
+          <h3>
+            Virus Level 
+            {phase === 'virus_level' && countdown > 0 && ` (${countdown}s remaining)`}
+          </h3>
+          <p><strong>Your selection:</strong> Level {isNaN(myLevel) ? 0 : myLevel} ({myVirusCount} viruses)</p>
+          <p><strong>Opponent:</strong> Level {isNaN(oppLevel) ? 0 : oppLevel} ({oppVirusCount} viruses)</p>
+          {phase === 'virus_level' && (
+            <p>Adjust virus level on your Game Boy</p>
+          )}
+        </div>
 
-        <h3>
-          Speed
-          {phase === 'speed' && countdown > 0 && ` (${countdown}s remaining)`}
-        </h3>
-        <p><strong>Your selection:</strong> {this.getSpeedName(mySelection.speed ?? 0x23)}</p>
-        <p><strong>Opponent:</strong> {this.getSpeedName(opponentSelection.speed ?? 0x23)}</p>
-        {phase === 'speed' && (
-          <p>Adjust speed on your Game Boy</p>
-        )}
-        <p>&nbsp;</p>
+        <div className={`settings-section${phase === 'speed' ? ' settings-section-active' : ''}`}>
+          <h3>
+            Speed
+            {phase === 'speed' && countdown > 0 && ` (${countdown}s remaining)`}
+          </h3>
+          <p><strong>Your selection:</strong> {this.getSpeedName(mySelection.speed ?? 0x23)}</p>
+          <p><strong>Opponent:</strong> {this.getSpeedName(opponentSelection.speed ?? 0x23)}</p>
+          {phase === 'speed' && (
+            <p>Adjust speed on your Game Boy</p>
+          )}
+        </div>
 
-        <h3>Music</h3>
-        {admin ? (
-          <div>
-            <p>Only the game creator can select music (applies to both players).</p>
-            <div className="mb-2">
-              <button 
-                className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Fever' ? 'btn-secondary' : 'btn-outline-secondary'}`}
-                onClick={() => this.handleMusicSelect(0x30)}
-                disabled={phase !== 'music'}
-              >
-                Fever
-              </button>
-              {' '}
-              <button 
-                className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Chill' ? 'btn-secondary' : 'btn-outline-secondary'}`}
-                onClick={() => this.handleMusicSelect(0x31)}
-                disabled={phase !== 'music'}
-              >
-                Chill
-              </button>
-              {' '}
-              <button 
-                className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Off' ? 'btn-secondary' : 'btn-outline-secondary'}`}
-                onClick={() => this.handleMusicSelect(0x32)}
-                disabled={phase !== 'music'}
-              >
-                Off
-              </button>
+        <div className={`settings-section${phase === 'music' ? ' settings-section-active' : ''}`}>
+          <h3>Music</h3>
+          {admin ? (
+            <div>
+              <p>Only the game creator can select music (applies to both players).</p>
+              <div className="mb-2 music-button-row">
+                <button 
+                  className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Fever' ? 'btn-secondary' : 'btn-outline-secondary'}`}
+                  onClick={() => this.handleMusicSelect(0x30)}
+                  disabled={phase !== 'music'}
+                >
+                  Fever
+                </button>
+                <button 
+                  className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Chill' ? 'btn-secondary' : 'btn-outline-secondary'}`}
+                  onClick={() => this.handleMusicSelect(0x31)}
+                  disabled={phase !== 'music'}
+                >
+                  Chill
+                </button>
+                <button 
+                  className={`btn musicButton ${this.getMusicName(mySelection.music) === 'Off' ? 'btn-secondary' : 'btn-outline-secondary'}`}
+                  onClick={() => this.handleMusicSelect(0x32)}
+                  disabled={phase !== 'music'}
+                >
+                  Off
+                </button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div>
-            <p><strong>Selected Music:</strong> {this.getMusicName(mySelection.music)}</p>
-            <p>Only the game creator can select music. They will choose from Fever, Chill, or Off.</p>
-          </div>
-        )}
+          ) : (
+            <div>
+              <p><strong>Selected Music:</strong> {this.getMusicName(mySelection.music)}</p>
+              <p>Only the game creator can select music. They will choose from Fever, Chill, or Off.</p>
+            </div>
+          )}
 
-        <p>&nbsp;</p>
+        </div>
+
         {phase === 'music' && admin && (
           <button 
-            className="btn btn-lg btn-secondary"
+            className="btn btn-lg btn-secondary start-game-button"
             onClick={() => this.handleStartGame()}
           >
             Start Game
@@ -121,7 +123,7 @@ class SettingsPhase extends React.Component {
         )}
 
         {phase === 'music' && !admin && (
-          <p>Waiting for admin to start game...</p>
+          <p className="start-game-waiting">Waiting for admin to start game...</p>
         )}
       </div>
     );

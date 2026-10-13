@@ -15,7 +15,7 @@ class GBWebsocket {
   GAME_STATE_ERROR = 9998
   GAME_STATE_NONE = 9999
 
-  constructor(url, name) {
+  constructor(url, name, selectionTime = null) {
     this.ws = new WebSocket(url);
     this.ws.onmessage = (function(event) {
       this.onMessage(event);
@@ -65,6 +65,7 @@ class GBWebsocket {
 
     this.admin = false;
     this.name = name;
+    this.selectionTime = selectionTime;
     this.game_name = "YOU SHOULD NEVER SEE THIS"; // famous last words
     this.game_status = this.GAME_STATE_NONE;
     this.users = []
@@ -73,10 +74,14 @@ class GBWebsocket {
   }
 
   sendRegisterMessage() {
-    this.ws.send(JSON.stringify({
+    var msg = {
       "type": "register",
       "name": this.name
-    }));
+    };
+    if (this.selectionTime != null) {
+      msg.selection_time = this.selectionTime;
+    }
+    this.ws.send(JSON.stringify(msg));
   }
 
   getOtherUsers() {
@@ -156,9 +161,9 @@ class GBWebsocket {
     }));
   }
 
-  static initiateGame(name) {
+  static initiateGame(name, selectionTime = 5) {
     const protocol = WEBSOCKET_HOST === 'localhost' ? 'ws' : 'wss';
-    var gb = new GBWebsocket(`${protocol}://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/create`, name);
+    var gb = new GBWebsocket(`${protocol}://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/create`, name, selectionTime);
     gb.admin = true;
     return gb;
   }

@@ -328,13 +328,13 @@ class OnlineDrMario extends React.Component {
     }, POLL_MS);
   }
 
-  handleCreateGame(name) {
+  handleCreateGame(name, selectionTime = 5) {
     this.setState({
       state: this.StateJoiningGame,
       admin: true,
       name: name
     })
-    this.gb = GBWebsocket.initiateGame(name);
+    this.gb = GBWebsocket.initiateGame(name, selectionTime);
     this.setGbCallbacks();
   }
 
@@ -778,7 +778,7 @@ class OnlineDrMario extends React.Component {
       if (this.state.state === this.StateStart) {
         return (
           <div className="connect">
-            <img src={`${IMG_BASE}/animation.gif`} className="gameboy" alt="" />
+            <img src={`${IMG_BASE}/animation.gif`} className="gameboy hero-icon" alt="" />
             <h2 className="cover-heading">Dr. Mario Online</h2>
             <p className="lead">Connect your Game Boy, boot Dr. Mario, and start playing with your friends!</p>
             <hr />
@@ -799,7 +799,7 @@ class OnlineDrMario extends React.Component {
             <h2 className="cover-heading">Dr. Mario</h2>
             <p className="lead">Play Dr. Mario with your friends online!</p>
             <hr />
-            <SelectGame onCreateGame={(name) => this.handleCreateGame(name)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
+            <SelectGame onCreateGame={(name, selectionTime) => this.handleCreateGame(name, selectionTime)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
             <br/>
             <small>Version: 0.3.0</small>
           </div>

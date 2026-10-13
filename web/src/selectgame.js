@@ -26,7 +26,8 @@ class SelectGame extends React.Component {
     super(props);
     this.state = {
       name: this.generateName(),
-      game_code: ""
+      game_code: "",
+      selectionTime: 5
     };
   }
 
@@ -40,6 +41,12 @@ class SelectGame extends React.Component {
   handleGameCodeChanged(event) {
     this.setState({
       game_code: event.target.value
+    })
+  }
+
+  handleSelectionTimeChanged(event) {
+    this.setState({
+      selectionTime: Number(event.target.value)
     })
   }
 
@@ -59,7 +66,20 @@ class SelectGame extends React.Component {
                     <h4>Create game</h4>
                   </div>
                   <div className="card-text">
-                    <button onClick={() => this.props.onCreateGame(this.state.name)} className="btn btn-lg btn-secondary">Create</button>
+                    <label className="selection-time-label" htmlFor="selection-time">
+                      Time per setting: {this.state.selectionTime}s
+                    </label>
+                    <input
+                      id="selection-time"
+                      type="range"
+                      className="form-range selection-time-slider"
+                      min="3"
+                      max="20"
+                      step="1"
+                      value={this.state.selectionTime}
+                      onChange={this.handleSelectionTimeChanged.bind(this)}
+                    />
+                    <button onClick={() => this.props.onCreateGame(this.state.name, this.state.selectionTime)} className="btn btn-lg btn-secondary">Create</button>
                   </div>
                 </div>
               </div>

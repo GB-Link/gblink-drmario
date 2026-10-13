@@ -86,7 +86,7 @@ class Game:
         print('lobby created with name', lobby_name)
         return lobby_name
 
-    def __init__(self, admin_socket):
+    def __init__(self, admin_socket, selection_time=5):
         self.name = self._generate_name()
         self.admin_socket = admin_socket
         self.clients = [admin_socket]
@@ -96,6 +96,11 @@ class Game:
         self.settings_sync_task = None
         self.settings_countdown = 0
         self.player_selections = {}
+        try:
+            selection_time = int(selection_time)
+        except (TypeError, ValueError):
+            selection_time = 5
+        self.selection_time = max(3, min(20, selection_time))
 
     def get_gameinfo(self):
         users = []
@@ -154,7 +159,7 @@ class Game:
         print("Starting settings phase!")
         self.state = self.GAME_STATE_SETTINGS
         self.settings_phase = 'virus_level'
-        self.settings_countdown = 5
+        self.settings_countdown = self.selection_time
         
         for client in self.clients:
             self.player_selections[client.uuid] = {
@@ -189,7 +194,7 @@ class Game:
         # virus_level -> speed -> music, then we're done
         if self.settings_phase == 'virus_level':
             self.settings_phase = 'speed'
-            self.settings_countdown = 5
+            self.settings_countdown = self.selection_time
             
             await self.send_all({
                 "type": "navigate_menu",
@@ -202,7 +207,7 @@ class Game:
             
         elif self.settings_phase == 'speed':
             self.settings_phase = 'music'
-            self.settings_countdown = 5
+            self.settings_countdown = self.selection_time
             
             await self.send_all({
                 "type": "navigate_menu",
@@ -572,7 +577,9 @@ def parse_register_msg(msg):
     return j
 
 async def newserver(websocket):
-    path = websocket.request.path  # Modern websockets API
+    path = getattr(websocket, "path", None)
+    if path is None and hasattr(websocket, "request"):
+        path = websocket.request.path
     print("Newserver")
     # First wait for registration message.
     # Without it we don't do anything.
@@ -598,9 +605,10 @@ async def newserver(websocket):
     # Either create a new game
     if(path == "/create"):
         print("Create game")
-        new_game = Game(client)
+        selection_time = msg.get("selection_time", 5)
+        new_game = Game(client, selection_time=selection_time)
         while new_game.name in games:
-            new_game = Game(client)
+            new_game = Game(client, selection_time=selection_time)
         client.set_game(new_game)
 
         print("Sending gameinfo..")
