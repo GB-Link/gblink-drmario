@@ -17,14 +17,16 @@ const IMG_BASE = (import.meta.env?.BASE_URL ?? '/').replace(/\/$/, '') + '/image
 
 class OnlineDrMario extends React.Component {
   StateStart = "Start"; // splash screen, hit connect to begin
-  StateConnect = "Connect"; // pick a username and create/join a game
+  StateConnect = "Connect"; // mode select / private lobby
   StateConnecting = "Connecting"; // opening the USB device
   StateJoiningGame = "JoiningGame"; // talking to the game server
+  StateMatchmaking = "Matchmaking"; // finding a random opponent
   StateLobby = "Lobby"; // waiting for the other player
   StateSettings = "Settings"; // virus level / speed / music phase
   StateStartingGame = "StartingGame"; // running the GB init handshake
   StateInGame = "InGame"; // actually playing!
   StateFinished = "Finished"; // round is over
+  StateOpponentDisconnect = "OpponentDisconnect";
   StateError = "StateError";
 
   // Needs to be in sync with server
@@ -52,8 +54,13 @@ class OnlineDrMario extends React.Component {
       navigationQueue: [],
       settingsPhase: null,
       settingsCountdown: 0,
-      playerSelections: {}
+      playerSelections: {},
+      isMatchmaking: false,
+      readyCountdown: 0,
+      iAmReady: false
     };
+    this.isMatchmaking = false;
+    this.countdownInterval = null;
     this.handshakeStarted = false;
     this._handshakeActive = false;
     this._serialCycleActive = false;
@@ -329,10 +336,12 @@ class OnlineDrMario extends React.Component {
   }
 
   handleCreateGame(name, selectionTime = 5) {
+    this.isMatchmaking = false;
     this.setState({
       state: this.StateJoiningGame,
       admin: true,
-      name: name
+      name: name,
+      isMatchmaking: false
     })
     this.gb = GBWebsocket.initiateGame(name, selectionTime);
     this.setGbCallbacks();
@@ -343,14 +352,48 @@ class OnlineDrMario extends React.Component {
       console.error('not a valid input. must have length 4')
       return;
     }
+    this.isMatchmaking = false;
     this.setState({
       state: this.StateJoiningGame,
       admin: false,
       name: name,
-      game_code: game_code
+      game_code: game_code,
+      isMatchmaking: false
     })
     this.gb = GBWebsocket.joinGame(name, game_code);
     this.setGbCallbacks();
+  }
+
+  handleFindMatch(name) {
+    this.isMatchmaking = true;
+    this.setState({
+      state: this.StateMatchmaking,
+      name: name,
+      admin: false,
+      isMatchmaking: true,
+      readyCountdown: 0,
+      iAmReady: false
+    });
+    this.gb = GBWebsocket.findMatch(name);
+    this.setGbCallbacks();
+  }
+
+  handleCancelMatchmaking() {
+    if (this.gb) {
+      this.gb.cancelMatchmaking();
+      this.gb = null;
+    }
+    this.isMatchmaking = false;
+    this.setState({
+      state: this.StateConnect,
+      isMatchmaking: false
+    });
+  }
+
+  handleReadyNext() {
+    if (!this.gb || !this.isMatchmaking) return;
+    this.gb.sendReadyNext();
+    this.setState({ iAmReady: true });
   }
 
   setGbCallbacks() {
@@ -368,10 +411,17 @@ class OnlineDrMario extends React.Component {
     this.gb.onlose = this.gbLose.bind(this);
     this.gb.onlinkbyte = this.gbLinkByte.bind(this);
     this.gb.onerror = this.gbError.bind(this);
+    this.gb.onmatchfound = this.gbMatchFound.bind(this);
+    this.gb.onopponentdisconnect = this.gbOpponentDisconnect.bind(this);
+    this.gb.onplayerready = this.gbPlayerReady.bind(this);
+    this.gb.oncountdownstarted = this.gbCountdownStarted.bind(this);
   }
 
   gbConnected(gb) {
     this.handshakeStarted = false;
+    if (this.isMatchmaking) {
+      return;
+    }
     this.setState({
       game_code: gb.game_name,
       users: gb.users,
@@ -379,7 +429,78 @@ class OnlineDrMario extends React.Component {
     });
   }
 
+  gbMatchFound(gb, message) {
+    const admin = message && message.admin_uuid
+      ? message.admin_uuid === gb.uuid
+      : gb.admin;
+    this.handshakeStarted = false;
+    this.setState({
+      game_code: gb.game_name,
+      users: gb.users || (message && message.users) || [],
+      admin: admin,
+      state: this.StateLobby,
+      isMatchmaking: true,
+      readyCountdown: 0,
+      iAmReady: false
+    });
+  }
+
+  gbOpponentDisconnect(gb) {
+    const wasInGame = this.state.state === this.StateInGame
+      || this.state.state === this.StateStartingGame
+      || this.state.state === this.StateFinished
+      || this.state.state === this.StateSettings;
+
+    if (!this.isMatchmaking) {
+      return;
+    }
+
+    if (this.gb) {
+      this.gb._closedByUs = true;
+      this.gb.ws.close();
+      this.gb = null;
+    }
+
+    const reconnect = () => {
+      this.handleFindMatch(this.state.name);
+    };
+
+    if (wasInGame) {
+      this.setState({ state: this.StateOpponentDisconnect });
+      setTimeout(reconnect, 5000);
+    } else {
+      reconnect();
+    }
+  }
+
+  gbPlayerReady(gb, uuid) {
+  }
+
+  gbCountdownStarted(gb, seconds) {
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    let countdown = seconds;
+    this.setState({ readyCountdown: countdown });
+    this.countdownInterval = setInterval(() => {
+      countdown -= 1;
+      if (countdown <= 0) {
+        clearInterval(this.countdownInterval);
+        this.countdownInterval = null;
+        this.setState({ readyCountdown: 0 });
+      } else {
+        this.setState({ readyCountdown: countdown });
+      }
+    }, 1000);
+  }
+
   gbGameStart(gb) {
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    this.setState({ readyCountdown: 0, iAmReady: false });
     this._handshakeActive = true;
     this._gameEndReported = false;
     this._pendingBytes = [];
@@ -613,12 +734,18 @@ class OnlineDrMario extends React.Component {
   }
 
   gbInfoUpdate(gb) {
+    if (this.isMatchmaking && this.state.state === this.StateMatchmaking) {
+      return;
+    }
     const users = Array.isArray(gb.users) ? [...gb.users] : [];
     const me = this.gb && this.gb.uuid && users.find((u) => u.uuid === this.gb.uuid);
     const nextState = {
       game_code: gb.game_name,
       users
     };
+    if (typeof gb.admin === 'boolean') {
+      nextState.admin = gb.admin;
+    }
     if (me != null && typeof me.virus_count === 'number') {
       const count = Math.min(Math.max(0, me.virus_count), 84);
       nextState.virus_count = count;
@@ -799,7 +926,11 @@ class OnlineDrMario extends React.Component {
             <h2 className="cover-heading">Dr. Mario</h2>
             <p className="lead">Play Dr. Mario with your friends online!</p>
             <hr />
-            <SelectGame onCreateGame={(name, selectionTime) => this.handleCreateGame(name, selectionTime)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
+            <SelectGame
+              onFindMatch={(name) => this.handleFindMatch(name)}
+              onCreateGame={(name, selectionTime) => this.handleCreateGame(name, selectionTime)}
+              onJoinGame={(name, code) => this.handleJoinGame(name, code)}
+            />
             <br/>
             <small>Version: 0.3.0</small>
           </div>
@@ -815,13 +946,29 @@ class OnlineDrMario extends React.Component {
         return(<div className="connect">
           <h2>Connecting to game server...</h2>
         </div>)
+      } else if(this.state.state === this.StateMatchmaking) {
+        return (
+          <div className="connect">
+            <h2>Finding Opponent...</h2>
+            <p>Please wait while we find you a match!</p>
+            <div className="spinner-border text-light" role="status" aria-label="Finding opponent"></div>
+            <hr />
+            <button
+              onClick={() => this.handleCancelMatchmaking()}
+              className="btn btn-lg btn-secondary"
+            >
+              Cancel
+            </button>
+          </div>
+        )
       } else if(this.state.state === this.StateLobby) {
         return(<div className="connect">
           <Lobby
               game_code={this.state.game_code}
               users={this.state.users}
               admin={this.state.admin}
-              uuid={this.state.uuid}/>
+              uuid={this.state.uuid}
+              isMatchmaking={this.state.isMatchmaking}/>
         </div>)
       } else if(this.state.state === this.StateSettings) {
         return(<div className="connect">
@@ -831,6 +978,7 @@ class OnlineDrMario extends React.Component {
               mySelection={{ virus_level: this.state.virus_level, speed: this.state.speed, music: this.state.music }}
               opponentSelection={this.state.playerSelections?.opponent_selection ?? this.opponentSelectionRef.current}
               admin={this.state.admin}
+              isMatchmaking={this.state.isMatchmaking}
               onMusicSelect={(music) => this.handleMusicSelect(music)}
               onStartGame={() => this.handleStartGame()}/>
         </div>)
@@ -842,19 +990,41 @@ class OnlineDrMario extends React.Component {
       } else if(this.state.state === this.StateInGame) {
         return(<div className="connect">
 
-          <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} currentUserUuid={this.state.uuid || (this.gb && this.gb.uuid)} />
+          <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} currentUserUuid={this.state.uuid || (this.gb && this.gb.uuid)} isMatchmaking={this.state.isMatchmaking} />
         </div>)
 
       } else if(this.state.state === this.StateFinished) {
         return (<div className="connect">
-            <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} uuid={this.state.uuid} />
+            <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} uuid={this.state.uuid} isMatchmaking={this.state.isMatchmaking} />
             <h2>Game finished!</h2>
-            {this.state.admin ? (
-              <button onClick={(e) => this.handleStartGame()} className="btn btn-lg btn-secondary">Start next game!</button>
+            {this.state.isMatchmaking ? (
+              <div>
+                {this.state.readyCountdown > 0 && (
+                  <p>Next round starting in {this.state.readyCountdown}s...</p>
+                )}
+                <button
+                  onClick={() => this.handleReadyNext()}
+                  className="btn btn-lg btn-secondary"
+                  disabled={this.state.iAmReady}
+                >
+                  {this.state.iAmReady ? 'Waiting for opponent...' : 'Start Next Round'}
+                </button>
+              </div>
             ) : (
-              <p style={{ color: 'white' }}>Waiting for other player to start next game.</p>
+              this.state.admin ? (
+                <button onClick={(e) => this.handleStartGame()} className="btn btn-lg btn-secondary">Start next game!</button>
+              ) : (
+                <p style={{ color: 'white' }}>Waiting for other player to start next game.</p>
+              )
             )}
           </div>)
+      } else if(this.state.state === this.StateOpponentDisconnect) {
+        return (
+          <div className="connect">
+            <h2>Opponent Disconnected</h2>
+            <p>Your opponent has left the game. Finding a new match...</p>
+          </div>
+        )
       } else if(this.state.state === this.StateError) {
         return (
           <div className="connect">

@@ -14,7 +14,7 @@ class InGame extends React.Component {
 
     return (
       <div>
-        <h2>In Game: {this.props.game_code}</h2>
+        <h2>In Game: {this.props.isMatchmaking ? 'Matchmaking' : this.props.game_code}</h2>
         <div className="container">
           <div className="row justify-content-center players-row">
               {sortedUsers.map((user) => (

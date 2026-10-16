@@ -64,17 +64,24 @@ class Lobby extends React.Component {
       }
     }
 
+    const displayCode = this.props.isMatchmaking ? 'Matchmaking' : this.props.game_code;
+    const canCopy = !this.props.isMatchmaking;
+
     return (
       <div>
         <h2>
           In Lobby:{' '}
-          <span 
-            onClick={() => this.handleCopyCode()} 
-            style={{ cursor: 'pointer', textDecoration: 'underline' }}
-            title="Click to copy"
-          >
-            {this.props.game_code}
-          </span>
+          {canCopy ? (
+            <span 
+              onClick={() => this.handleCopyCode()} 
+              style={{ cursor: 'pointer', textDecoration: 'underline' }}
+              title="Click to copy"
+            >
+              {displayCode}
+            </span>
+          ) : (
+            <span>{displayCode}</span>
+          )}
         </h2>
         {this.state.copied && <p>Copied to clipboard!</p>}
         <h4>Players:</h4>

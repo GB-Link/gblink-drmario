@@ -19,6 +19,8 @@ WEBSOCKET_PORT = os.getenv('WEBSOCKET_PORT')
 FULLCHAIN_CERT_PATH = os.getenv('FULLCHAIN_CERT_PATH')
 PRIVKEY_PATH = os.getenv('PRIVKEY_PATH')
 
+matchmaking_queue = []
+
 class Client:
     # Needs to be in sync with client!!!
     STATE_ALIVE = 0
@@ -35,6 +37,7 @@ class Client:
         self.num_wins = 0
         self.gb_connected = False
         self.awaiting_link_payload = False
+        self.match_event = asyncio.Event()
 
     def set_game(self, game):
         print("Setting game...")
@@ -86,16 +89,19 @@ class Game:
         print('lobby created with name', lobby_name)
         return lobby_name
 
-    def __init__(self, admin_socket, selection_time=5):
+    def __init__(self, admin_socket, selection_time=5, is_matchmaking=False):
         self.name = self._generate_name()
         self.admin_socket = admin_socket
         self.clients = [admin_socket]
         self.state = self.GAME_STATE_LOBBY
+        self.is_matchmaking = is_matchmaking
         self.settings_phase = None
         self.settings_timer_task = None
         self.settings_sync_task = None
         self.settings_countdown = 0
         self.player_selections = {}
+        self.ready_clients = set()
+        self.ready_timer_task = None
         try:
             selection_time = int(selection_time)
         except (TypeError, ValueError):
@@ -111,7 +117,8 @@ class Game:
             "type": "game_info",
             "name": self.name,
             "status": self.state,
-            "users": users
+            "users": users,
+            "admin_uuid": self.admin_socket.uuid if self.admin_socket else None
         }
 
     async def send_gameinfo(self):
@@ -139,12 +146,15 @@ class Game:
         self.clients.append(client)
         await self.send_gameinfo()
 
-        # Both players are in. Ask both GBs to do the link cable handshake
         if len(self.clients) == 2:
-            for c in self.clients:
-                c.gb_connected = False
-            await asyncio.sleep(0.3)
-            await self.send_all({"type": "request_handshake"})
+            await self.begin_handshake()
+
+    async def begin_handshake(self):
+        for c in self.clients:
+            c.gb_connected = False
+        await self.send_gameinfo()
+        await asyncio.sleep(0.3)
+        await self.send_all({"type": "request_handshake"})
 
     async def check_start_settings(self):
         if self.state != self.GAME_STATE_LOBBY:
@@ -208,18 +218,34 @@ class Game:
         elif self.settings_phase == 'speed':
             self.settings_phase = 'music'
             self.settings_countdown = self.selection_time
-            
-            await self.send_all({
-                "type": "navigate_menu",
-                "target_menu": 2,
-                "phase": "music",
-                "countdown": self.settings_countdown
-            })
+            if self.is_matchmaking:
+                music_value = random.choice([0x30, 0x31])
+                for uuid in self.player_selections:
+                    self.player_selections[uuid]['music'] = music_value
+                await self.send_all({
+                    "type": "navigate_menu",
+                    "target_menu": 2,
+                    "phase": "music",
+                    "countdown": self.settings_countdown
+                })
+                await self.send_all({
+                    "type": "music_sync",
+                    "music": music_value
+                })
+            else:
+                await self.send_all({
+                    "type": "navigate_menu",
+                    "target_menu": 2,
+                    "phase": "music",
+                    "countdown": self.settings_countdown
+                })
             self.settings_timer_task = asyncio.create_task(self.settings_timer_countdown())
 
         elif self.settings_phase == 'music':
             self.settings_countdown = 0
             self.settings_timer_task = None
+            if self.is_matchmaking:
+                await self.start_game()
 
     def _get_client_selection(self, client):
         if client.uuid not in self.player_selections:
@@ -262,6 +288,10 @@ class Game:
 
     async def start_game(self):
         print("Starting game!")
+        if self.ready_timer_task:
+            self.ready_timer_task.cancel()
+            self.ready_timer_task = None
+        self.ready_clients = set()
         if self.settings_sync_task:
             self.settings_sync_task.cancel()
             try:
@@ -468,11 +498,13 @@ class Game:
                 self.player_selections[client.uuid]['virus_level'] = msg['virus_level']
             if 'speed' in msg:
                 self.player_selections[client.uuid]['speed'] = msg['speed']
-            if 'music' in msg:
+            if 'music' in msg and not self.is_matchmaking:
                 self.player_selections[client.uuid]['music'] = msg['music']
             
             await self.broadcast_settings_sync()
         elif msg["type"] == "music_select":
+            if self.is_matchmaking:
+                return
             # Check if game state is correct.
             if self.state != self.GAME_STATE_SETTINGS:
                 print("Error: Not in settings phase")
@@ -490,6 +522,9 @@ class Game:
                 "music": music_value
             })
         elif msg["type"] == "start":
+            if self.is_matchmaking:
+                print("Error: Matchmaking games auto-start / use ready_next.")
+                return
             # Check if game state is correct.
             if self.state != self.GAME_STATE_SETTINGS and self.state != self.GAME_STATE_BETWEEN:
                 print("Error: Cannot start game", self.state)
@@ -547,6 +582,7 @@ class Game:
                 print("We have a winner!")
                 winner.set_winner()
                 await winner.send(json.dumps({"type": "win"}))
+            self.ready_clients = set()
             self.state = self.GAME_STATE_BETWEEN
             await self.send_gameinfo()
         elif msg["type"] == "win":
@@ -561,10 +597,94 @@ class Game:
                     c.set_dead()
                     await c.send(json.dumps({"type": "lose"}))
             await client.send(json.dumps({"type": "win"}))
+            self.ready_clients = set()
             self.state = self.GAME_STATE_BETWEEN
             await self.send_gameinfo()
+        elif msg["type"] == "ready_next":
+            if self.state != self.GAME_STATE_BETWEEN:
+                return
+            if not self.is_matchmaking:
+                return
+            self.ready_clients.add(client.uuid)
+            await self.send_all({"type": "player_ready", "uuid": client.uuid})
+            if len(self.ready_clients) >= len(self.clients):
+                if self.ready_timer_task:
+                    self.ready_timer_task.cancel()
+                    self.ready_timer_task = None
+                await self.start_game()
+            elif len(self.ready_clients) == 1:
+                await self.send_all({"type": "countdown_started", "seconds": 10})
+                self.ready_timer_task = asyncio.create_task(self._ready_countdown())
 
+    async def _ready_countdown(self):
+        try:
+            await asyncio.sleep(10)
+            if self.state == self.GAME_STATE_BETWEEN and self.is_matchmaking:
+                await self.start_game()
+        except asyncio.CancelledError:
+            pass
 
+    async def handle_client_disconnect(self, disconnected_client):
+        print(f"Client {disconnected_client.name} disconnected from game {self.name}")
+
+        if disconnected_client in self.clients:
+            self.clients.remove(disconnected_client)
+
+        if disconnected_client == self.admin_socket and len(self.clients) > 0:
+            self.admin_socket = self.clients[0]
+            print(f"Admin reassigned to {self.admin_socket.name}")
+
+        if self.ready_timer_task:
+            self.ready_timer_task.cancel()
+            self.ready_timer_task = None
+        self.ready_clients.discard(disconnected_client.uuid)
+
+        if self.state == self.GAME_STATE_RUNNING:
+            disconnected_client.set_dead()
+            alive_count = self.alive_count()
+            if alive_count == 1:
+                winner = self.get_last_alive()
+                if winner:
+                    winner.set_winner()
+                    try:
+                        await winner.send(json.dumps({
+                            "type": "opponent_disconnect"
+                        }))
+                        if not self.is_matchmaking:
+                            await winner.send(json.dumps({
+                                "type": "win"
+                            }))
+                    except websockets.exceptions.ConnectionClosed:
+                        print(f"Winner {winner.name} also disconnected")
+                if self.is_matchmaking:
+                    self.state = self.GAME_STATE_FINISHED
+                else:
+                    self.state = self.GAME_STATE_BETWEEN
+            elif alive_count == 0:
+                self.state = self.GAME_STATE_FINISHED
+            else:
+                await self.send_gameinfo()
+
+        elif self.state in (self.GAME_STATE_BETWEEN, self.GAME_STATE_SETTINGS, self.GAME_STATE_LOBBY):
+            if len(self.clients) <= 1:
+                for c in list(self.clients):
+                    try:
+                        await c.send(json.dumps({
+                            "type": "opponent_disconnect"
+                        }))
+                    except websockets.exceptions.ConnectionClosed:
+                        print(f"Notify failed - {c.name} also disconnected")
+                if self.is_matchmaking or len(self.clients) == 0:
+                    self.state = self.GAME_STATE_FINISHED
+                else:
+                    await self.send_gameinfo()
+            else:
+                await self.send_gameinfo()
+
+        if len(self.clients) == 0:
+            self.state = self.GAME_STATE_FINISHED
+            if self.name in games:
+                del games[self.name]
 
 
 games = {}
@@ -617,7 +737,11 @@ async def newserver(websocket):
 
         games[new_game.name] = new_game
 
-        await client.process()
+        try:
+            await client.process()
+        except websockets.exceptions.ConnectionClosed:
+            print(f"Client {client.name} disconnected")
+            await new_game.handle_client_disconnect(client)
     # Or join an existing game
     elif(path.startswith("/join/")):
         game_name = path[6:].upper()
@@ -631,13 +755,120 @@ async def newserver(websocket):
             return
 
         game = games[game_name]
+        if game.is_matchmaking:
+            error = {
+                "type": "error",
+                "msg": "Game not found."
+            }
+            await websocket.send(json.dumps(error))
+            return
+
         client.set_game(game)
 
         await game.add_client(client)
 
         print("Sending gameinfo..")
         await game.send_gameinfo()
-        await client.process()
+        try:
+            await client.process()
+        except websockets.exceptions.ConnectionClosed:
+            print(f"Client {client.name} disconnected")
+            await game.handle_client_disconnect(client)
+    elif(path == "/matchmake"):
+        print("Matchmaking request")
+        client.match_event = asyncio.Event()
+        matchmaking_queue.append(client)
+
+        if len(matchmaking_queue) >= 2:
+            player1 = matchmaking_queue.pop(0)
+            player2 = matchmaking_queue.pop(0)
+
+            print(f"Pairing {player1.name} with {player2.name}")
+
+            new_game = Game(player1, is_matchmaking=True)
+            while new_game.name in games:
+                new_game = Game(player1, is_matchmaking=True)
+
+            player1.set_game(new_game)
+            player2.set_game(new_game)
+            new_game.clients.append(player2)
+            games[new_game.name] = new_game
+
+            match_info = {
+                "type": "match_found",
+                "name": new_game.name,
+                "users": [c.serialize() for c in new_game.clients],
+                "admin_uuid": player1.uuid
+            }
+            await player1.send(json.dumps(match_info))
+            await player2.send(json.dumps(match_info))
+
+            player1.match_event.set()
+            await asyncio.sleep(0)
+            await new_game.begin_handshake()
+
+            try:
+                await client.process()
+            except websockets.exceptions.ConnectionClosed:
+                print(f"Client {client.name} disconnected during matchmaking game")
+                await new_game.handle_client_disconnect(client)
+        else:
+            print(f"{client.name} waiting in matchmaking queue (queue size: {len(matchmaking_queue)})")
+            matched = False
+            queued_msg = None
+            try:
+                while True:
+                    recv_task = asyncio.create_task(client.socket.recv())
+                    match_task = asyncio.create_task(client.match_event.wait())
+
+                    done, pending = await asyncio.wait(
+                        [recv_task, match_task],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed, Exception):
+                            pass
+
+                    if recv_task in done:
+                        try:
+                            raw = recv_task.result()
+                        except websockets.exceptions.ConnectionClosed:
+                            raise
+                        data = json.loads(raw)
+                        if data.get("type") == "cancel_matchmaking":
+                            print(f"{client.name} cancelled matchmaking")
+                            if client in matchmaking_queue:
+                                matchmaking_queue.remove(client)
+                            return
+                        if client.game:
+                            queued_msg = data
+                            matched = True
+                            break
+
+                    if match_task in done:
+                        matched = True
+                        break
+            except websockets.exceptions.ConnectionClosed:
+                print(f"{client.name} disconnected while waiting in queue")
+                if client in matchmaking_queue:
+                    matchmaking_queue.remove(client)
+                if client.game:
+                    await client.game.handle_client_disconnect(client)
+                return
+
+            if matched:
+                try:
+                    if queued_msg:
+                        await client.game.process(client, queued_msg)
+                    await client.process()
+                except websockets.exceptions.ConnectionClosed:
+                    print(f"Client {client.name} disconnected during matchmaking game")
+                    if client.game:
+                        await client.game.handle_client_disconnect(client)
 
     else:
         print(f"Unhandled path: {path}")

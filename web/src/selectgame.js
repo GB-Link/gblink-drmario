@@ -27,7 +27,8 @@ class SelectGame extends React.Component {
     this.state = {
       name: this.generateName(),
       game_code: "",
-      selectionTime: 5
+      selectionTime: 5,
+      screen: "mode"
     };
   }
 
@@ -50,9 +51,42 @@ class SelectGame extends React.Component {
     })
   }
 
-  render() {
+  renderModeSelect() {
     return (
+      <div className="connect">
+        <h2>Select a username:</h2>
+        <input type="text" className="form-control username-input" onChange={this.handleNameChanged.bind(this)} value={this.state.name} />
+        <hr/>
+        <h2>Select Game Mode</h2>
+        <div className="container">
+          <div className="row justify-content-center">
+            <div className="col-6 col-sm-5 mb-3">
+              <button
+                onClick={() => this.props.onFindMatch(this.state.name)}
+                className="btn btn-lg btn-secondary btn-block"
+              >
+                Find Match
+              </button>
+              <p><small>Play a random opponent</small></p>
+            </div>
+            <div className="col-6 col-sm-5 mb-3">
+              <button
+                onClick={() => this.setState({ screen: "private" })}
+                className="btn btn-lg btn-secondary btn-block"
+              >
+                Private Lobby
+              </button>
+              <p><small>Create or join a private game</small></p>
+            </div>
+          </div>
+        </div>
+        <hr />
+      </div>
+    );
+  }
 
+  renderPrivateLobby() {
+    return (
       <div className="connect">
         <h2>Select a username:</h2>
         <input type="text" className="form-control username-input" onChange={this.handleNameChanged.bind(this)} value={this.state.name} />
@@ -106,8 +140,21 @@ class SelectGame extends React.Component {
           </div>
         </div>
         <hr />
+        <button
+          onClick={() => this.setState({ screen: "mode" })}
+          className="btn btn-sm btn-secondary"
+        >
+          Back
+        </button>
       </div>
-    )
+    );
+  }
+
+  render() {
+    if (this.state.screen === "private") {
+      return this.renderPrivateLobby();
+    }
+    return this.renderModeSelect();
   }
 }
 

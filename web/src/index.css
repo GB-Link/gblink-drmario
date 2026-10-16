@@ -136,6 +136,10 @@ body {
   margin-top: 1.5rem;
 }
 
+.btn-block {
+  width: 100%;
+}
+
 .player-card {
   display: flex;
   flex-direction: column;

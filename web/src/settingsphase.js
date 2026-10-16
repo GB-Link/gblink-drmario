@@ -38,7 +38,7 @@ class SettingsPhase extends React.Component {
   }
 
   render() {
-    const { phase, countdown, mySelection: myProp, opponentSelection: oppProp, admin } = this.props;
+    const { phase, countdown, mySelection: myProp, opponentSelection: oppProp, admin, isMatchmaking } = this.props;
     const defaultSelection = { virus_level: 0, speed: 0x23, music: 0x30 };
     const mySelection = { ...defaultSelection, ...(myProp || {}) };
     const opponentSelection = { ...defaultSelection, ...(oppProp || {}) };
@@ -76,8 +76,16 @@ class SettingsPhase extends React.Component {
         </div>
 
         <div className={`settings-section${phase === 'music' ? ' settings-section-active' : ''}`}>
-          <h3>Music</h3>
-          {admin ? (
+          <h3>
+            Music
+            {phase === 'music' && countdown > 0 && ` (${countdown}s remaining)`}
+          </h3>
+          {isMatchmaking ? (
+            <div>
+              <p><strong>Selected Music:</strong> {this.getMusicName(mySelection.music)}</p>
+              <p>Music is chosen at random for matchmaking.</p>
+            </div>
+          ) : admin ? (
             <div>
               <p>Only the game creator can select music (applies to both players).</p>
               <div className="mb-2 music-button-row">
@@ -113,7 +121,13 @@ class SettingsPhase extends React.Component {
 
         </div>
 
-        {phase === 'music' && admin && (
+        {phase === 'music' && isMatchmaking && (
+          <p className="start-game-waiting">
+            {countdown > 0 ? `Match starting in ${countdown}s...` : 'Match starting...'}
+          </p>
+        )}
+
+        {phase === 'music' && !isMatchmaking && admin && (
           <button 
             className="btn btn-lg btn-secondary start-game-button"
             onClick={() => this.handleStartGame()}
@@ -122,7 +136,7 @@ class SettingsPhase extends React.Component {
           </button>
         )}
 
-        {phase === 'music' && !admin && (
+        {phase === 'music' && !isMatchmaking && !admin && (
           <p className="start-game-waiting">Waiting for admin to start game...</p>
         )}
       </div>

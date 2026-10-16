@@ -63,6 +63,14 @@ class GBWebsocket {
 
     this.onrequesthandshake = function() {}
 
+    this.onmatchfound = function() {}
+
+    this.onopponentdisconnect = function() {}
+
+    this.onplayerready = function() {}
+
+    this.oncountdownstarted = function() {}
+
     this.admin = false;
     this.name = name;
     this.selectionTime = selectionTime;
@@ -70,6 +78,7 @@ class GBWebsocket {
     this.game_status = this.GAME_STATE_NONE;
     this.users = []
     this.uuid = ""
+    this._closedByUs = false;
     this.waitForConnection();
   }
 
@@ -161,6 +170,22 @@ class GBWebsocket {
     }));
   }
 
+  sendReadyNext() {
+    this.ws.send(JSON.stringify({
+      "type": "ready_next"
+    }));
+  }
+
+  cancelMatchmaking() {
+    if (this.ws.readyState === 1) {
+      this.ws.send(JSON.stringify({
+        "type": "cancel_matchmaking"
+      }));
+    }
+    this._closedByUs = true;
+    this.ws.close();
+  }
+
   static initiateGame(name, selectionTime = 5) {
     const protocol = WEBSOCKET_HOST === 'localhost' ? 'ws' : 'wss';
     var gb = new GBWebsocket(`${protocol}://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/create`, name, selectionTime);
@@ -173,6 +198,11 @@ class GBWebsocket {
     return new GBWebsocket(`${protocol}://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/join/` + code, name)
   }
 
+  static findMatch(name) {
+    const protocol = WEBSOCKET_HOST === 'localhost' ? 'ws' : 'wss';
+    return new GBWebsocket(`${protocol}://${WEBSOCKET_HOST}:${WEBSOCKET_PORT}/matchmake`, name);
+  }
+
   onMessage(event) {
     var message = JSON.parse(event.data);
 
@@ -181,6 +211,9 @@ class GBWebsocket {
         this.game_name = message.name;
         this.game_status = message.status ?? message.state;
         this.users = message.users;
+        if (message.admin_uuid) {
+          this.admin = message.admin_uuid === this.uuid;
+        }
         this.oninfoupdate(this);
         break;
       case "request_handshake":
@@ -233,6 +266,23 @@ class GBWebsocket {
         if (typeof message.byte === "number") {
           this.onlinkbyte(this, message.byte);
         }
+        break;
+      case "match_found":
+        this.game_name = message.name;
+        this.users = message.users;
+        if (message.admin_uuid) {
+          this.admin = message.admin_uuid === this.uuid;
+        }
+        this.onmatchfound(this, message);
+        break;
+      case "opponent_disconnect":
+        this.onopponentdisconnect(this);
+        break;
+      case "player_ready":
+        this.onplayerready(this, message.uuid);
+        break;
+      case "countdown_started":
+        this.oncountdownstarted(this, message.seconds);
         break;
       default:
         console.warn("Unknown message type:", message?.type);
