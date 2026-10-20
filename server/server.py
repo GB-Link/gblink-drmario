@@ -748,11 +748,31 @@ def build_report():
         },
     }
 
-async def handle_report(websocket):
-    try:
-        raw = await websocket.recv()
-        msg = json.loads(raw)
-    except (json.JSONDecodeError, websockets.exceptions.ConnectionClosed):
+def normalize_ws_path(path):
+    if not path:
+        return ""
+    return path.split("?", 1)[0].rstrip("/") or "/"
+
+
+def connection_path(websocket):
+    path = getattr(websocket, "path", None)
+    if path is None and hasattr(websocket, "request"):
+        req = websocket.request
+        path = getattr(req, "path", None)
+    return normalize_ws_path(path)
+
+
+def is_report_path(path):
+    return normalize_ws_path(path) == "/report"
+
+
+async def handle_report_message(websocket, msg):
+    """Authorize and reply to an already-parsed get_report message."""
+    if not REPORT_TOKEN:
+        try:
+            await websocket.close(1008, "Report disabled")
+        except websockets.exceptions.ConnectionClosed:
+            pass
         return
 
     token = msg.get("token", "") if isinstance(msg, dict) else ""
@@ -775,21 +795,28 @@ async def handle_report(websocket):
     except websockets.exceptions.ConnectionClosed:
         pass
 
+
+async def handle_report(websocket):
+    try:
+        raw = await websocket.recv()
+        msg = json.loads(raw)
+    except (json.JSONDecodeError, websockets.exceptions.ConnectionClosed):
+        return
+    await handle_report_message(websocket, msg)
+
+
 def parse_register_msg(msg):
-    j = json.loads(msg)
+    j = json.loads(msg) if isinstance(msg, str) else msg
     if j["type"] != "register":
         return None
 
     return j
 
 async def newserver(websocket):
-    path = getattr(websocket, "path", None)
-    if path is None and hasattr(websocket, "request"):
-        path = websocket.request.path
+    path = connection_path(websocket)
 
-    if path == "/report":
-        # process_request blocks /report when REPORT_TOKEN is unset; this is the
-        # enabled path only.
+    if is_report_path(path):
+        # process_request blocks /report when REPORT_TOKEN is unset.
         await handle_report(websocket)
         return
 
@@ -797,8 +824,20 @@ async def newserver(websocket):
 
     # First wait for registration message.
     # Without it we don't do anything.
-    msg = parse_register_msg(await websocket.recv())
-    if msg == None:
+    # Also accept get_report here: some reverse proxies strip /report so the
+    # handler only sees "/" — route by message type in that case.
+    try:
+        raw = await websocket.recv()
+        first = json.loads(raw)
+    except (json.JSONDecodeError, websockets.exceptions.ConnectionClosed):
+        return
+
+    if isinstance(first, dict) and first.get("type") == "get_report":
+        await handle_report_message(websocket, first)
+        return
+
+    msg = parse_register_msg(first)
+    if msg is None:
         error = {
             "type": "error",
             "msg": "Invalid registration message"
@@ -984,9 +1023,22 @@ async def newserver(websocket):
 
 
 
-async def process_request(path, request_headers):
-    """Reject /report before the WebSocket handshake when reporting is disabled."""
-    if path == "/report" and not REPORT_TOKEN:
+async def process_request(arg1, arg2):
+    """Reject /report before the WebSocket handshake when reporting is disabled.
+
+    Compatible with websockets legacy (path, headers) and newer (connection, request).
+    """
+    # websockets 13+: (connection, request) where request has .path
+    if hasattr(arg2, "path"):
+        path = arg2.path
+        connection = arg1
+        if is_report_path(path) and not REPORT_TOKEN:
+            return connection.respond(HTTPStatus.NOT_FOUND, "Not Found")
+        return None
+
+    # older websockets: (path, request_headers)
+    path = arg1
+    if is_report_path(path) and not REPORT_TOKEN:
         return HTTPStatus.NOT_FOUND, [], b"Not Found\n"
     return None
 
