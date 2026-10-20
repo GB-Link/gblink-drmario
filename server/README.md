@@ -19,6 +19,7 @@ Copy `template.env` to `.env` and configure:
 | `USE_SSL` | Set to `true` for TLS on the socket (`FULLCHAIN_CERT_PATH` and `PRIVKEY_PATH` required) |
 | `FULLCHAIN_CERT_PATH` | TLS certificate chain (when using SSL) |
 | `PRIVKEY_PATH` | TLS private key (when using SSL) |
+| `REPORT_TOKEN` | Shared secret for the `/report` status WebSocket. If missing, blank, or whitespace-only, `/report` does not exist (HTTP 404 before the WebSocket handshake). |
 
 If `USE_SSL` is unset or not `true`, the server listens with plain `ws` on `0.0.0.0`.
 
