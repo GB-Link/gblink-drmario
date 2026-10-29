@@ -712,6 +712,13 @@ def track_client(client):
 def untrack_client(client):
     connected_clients.discard(client)
 
+async def release_client(client):
+    """Drop a client whose socket has closed, including a clean close."""
+    game = client.game
+    if game is None or client not in game.clients:
+        return
+    await game.handle_client_disconnect(client)
+
 def build_report():
     now = time.time()
     by_state = {"lobby": 0, "settings": 0, "running": 0, "between": 0}
@@ -875,9 +882,8 @@ async def newserver(websocket):
             await client.process()
         except websockets.exceptions.ConnectionClosed:
             print(f"Client {client.name} disconnected")
-            if client.game:
-                await client.game.handle_client_disconnect(client)
         finally:
+            await release_client(client)
             untrack_client(client)
     # Or join an existing game
     elif(path.startswith("/join/")):
@@ -912,8 +918,8 @@ async def newserver(websocket):
             await client.process()
         except websockets.exceptions.ConnectionClosed:
             print(f"Client {client.name} disconnected")
-            await game.handle_client_disconnect(client)
         finally:
+            await release_client(client)
             untrack_client(client)
     elif(path == "/matchmake"):
         print("Matchmaking request")
@@ -952,8 +958,8 @@ async def newserver(websocket):
                 await client.process()
             except websockets.exceptions.ConnectionClosed:
                 print(f"Client {client.name} disconnected during matchmaking game")
-                await new_game.handle_client_disconnect(client)
             finally:
+                await release_client(client)
                 untrack_client(client)
         else:
             print(f"{client.name} waiting in matchmaking queue (queue size: {len(matchmaking_queue)})")
@@ -1012,9 +1018,8 @@ async def newserver(websocket):
                     await client.process()
                 except websockets.exceptions.ConnectionClosed:
                     print(f"Client {client.name} disconnected during matchmaking game")
-                    if client.game:
-                        await client.game.handle_client_disconnect(client)
                 finally:
+                    await release_client(client)
                     untrack_client(client)
 
     else:
