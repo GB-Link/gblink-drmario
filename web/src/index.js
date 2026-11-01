@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import './index.css';
+import './emulator/emulator.css';
 
 import { Serial } from './serial.js';
 import { SerialWS } from './serial_ws.js';
@@ -28,6 +29,9 @@ class OnlineDrMario extends React.Component {
   StateFinished = "Finished"; // round is over
   StateOpponentDisconnect = "OpponentDisconnect";
   StateError = "StateError";
+
+  // States where the emulated Game Boy may be reset or swapped (no lobby open)
+  EmulatorFreeStates = ["Start", "Connect", "Connecting", "StateError"];
 
   // Needs to be in sync with server
   USER_STATE_ALIVE = 0;
@@ -62,6 +66,7 @@ class OnlineDrMario extends React.Component {
     this.isMatchmaking = false;
     this.countdownInterval = null;
     this.handshakeStarted = false;
+    this.emulator = null; // in-page Game Boy (src/emulator/EmulatorPanel.js), once opened
     this._handshakeActive = false;
     this._serialCycleActive = false;
     this._gameEndReported = false;
@@ -92,6 +97,61 @@ class OnlineDrMario extends React.Component {
         state: this.StateStart,
         errorMessage: `Failed to connect ${kind === 'serial' ? 'serial port' : 'USB device'}`
       });
+    });
+  }
+
+  componentDidUpdate(prevProps, prevState) {
+    if (this.emulator && prevState.state !== this.state.state) {
+      this.emulator.setLocked(!this.EmulatorFreeStates.includes(this.state.state));
+      // Back at the start with the emulator running: its Game Boy is still connected
+      if (this.state.state === this.StateStart && this.emulator.hasGame) {
+        this.setState({ state: this.StateConnect, gbConnected: true });
+      }
+    }
+  }
+
+  // In-page emulator: the player's own Dr. Mario ROM instead of a Game Boy on the adapter
+  handleEmulatorClick() {
+    if (this.emulator) {
+      this.emulator.open();
+      return;
+    }
+    this.setState({ emulatorLoading: true });
+    import('./emulator/EmulatorPanel.js').then(({ EmulatorPanel }) => {
+      this.emulator = new EmulatorPanel(document.getElementById('emu-host'), {
+        game: { name: 'Dr. Mario', identify: identifyDrMario },
+        emulatorUrl: `${import.meta.env.BASE_URL}emulator/`,
+        workletUrl: `${import.meta.env.BASE_URL}emulator/audio-worklet.js`,
+        storeName: 'gblink-drmario-emulator',
+        buttonClass: 'btn btn-secondary',
+        onStart: (serial) => this.handleEmulatorStart(serial),
+        onClose: () => this.handleEmulatorClose(),
+      });
+      this.emulator.setLocked(!this.EmulatorFreeStates.includes(this.state.state));
+      return this.emulator.open();
+    }).catch((e) => {
+      console.error('Emulator unavailable:', e);
+      this.setState({ emulatorError: 'The emulator could not be loaded in this browser.' });
+    }).finally(() => {
+      this.setState({ emulatorLoading: false });
+    });
+  }
+
+  // A game is running in the emulator (or was just reset): use it like a newly connected Game Boy
+  handleEmulatorStart(serial) {
+    this.serial = serial;
+    this.handshakeStarted = false;
+    this.setState({
+      state: this.StateConnect,
+      gbConnected: true
+    });
+  }
+
+  handleEmulatorClose() {
+    this.serial = null;
+    this.setState({
+      state: this.StateStart,
+      gbConnected: false
     });
   }
 
@@ -900,8 +960,9 @@ class OnlineDrMario extends React.Component {
 
   render() {
     // Prefer WebUSB; fall back to WebSerial (Firefox 151+, or Chromium with WebUSB disabled).
+    // Without either, the in-page emulator still works.
     const transport = ('usb' in navigator) ? 'usb' : (('serial' in navigator) ? 'serial' : null);
-    if (transport) {
+    if (transport || typeof WebAssembly === 'object') {
       if (this.state.state === this.StateStart) {
         return (
           <div className="connect">
@@ -909,12 +970,32 @@ class OnlineDrMario extends React.Component {
             <h2 className="cover-heading">Dr. Mario Online</h2>
             <p className="lead">Connect your Game Boy, boot Dr. Mario, and start playing with your friends!</p>
             <hr />
-            <h4>Connect your Game Boy</h4>
-            <p>Connect your Game Boy with the USB to Game Link adapter and click "Connect".</p>
-            <button
-              onClick={(e) => this.handleStartClick(transport)}
-              className="btn btn-lg btn-secondary">{transport === 'serial' ? 'Connect Serial' : 'Connect USB'}</button>
-            <br/>
+            <div className="connect-hardware">
+              <h4>Connect your Game Boy</h4>
+              {transport ? (
+                <>
+                  <p>Connect your Game Boy with the USB to Game Link adapter and click "Connect".</p>
+                  <button
+                    onClick={(e) => this.handleStartClick(transport)}
+                    className="btn btn-lg btn-secondary">{transport === 'serial' ? 'Connect Serial' : 'Connect USB'}</button>
+                </>
+              ) : (
+                <p>This browser can't use the USB adapter (Chrome, Edge or Firefox 151 and later can).</p>
+              )}
+            </div>
+            <div className="emu-offer">
+              <p>{this.state.emulatorError || (transport
+                ? 'No Game Boy at hand? Play Dr. Mario in your browser with your own ROM.'
+                : 'You can still play Dr. Mario in your browser with your own ROM.')}</p>
+              <button
+                onClick={(e) => this.handleEmulatorClick()}
+                disabled={!!this.state.emulatorLoading}
+                className="btn btn-lg btn-secondary">Use emulator</button>
+            </div>
+            <div className="emu-waiting">
+              <h4>Load your Dr. Mario ROM</h4>
+              <p>Once it's running in the emulator, it links up here just like a Game Boy on the adapter.</p>
+            </div>
             <br/>
             <small>Version: 0.3.0</small>
           </div>
@@ -1050,6 +1131,12 @@ class OnlineDrMario extends React.Component {
       )
     }
   }
+}
+
+// Dr. Mario from its ROM header
+function identifyDrMario(rom) {
+  const title = String.fromCharCode(...rom.subarray(0x134, 0x144)).replace(/\0+$/, '');
+  return title === 'DR.MARIO' ? { title: 'Dr. Mario' } : null;
 }
 
 const root = createRoot(document.getElementById('root'));
