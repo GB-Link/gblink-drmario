@@ -105,6 +105,7 @@ class Serial {
       { 'vendorId': 0x239A }, // Adafruit boards
       { 'vendorId': 0xcafe }, // TinyUSB (old reconfigurable firmware)
       { 'vendorId': 0x2FE3 }, // Zephyr default (new GBLink firmware)
+      { 'vendorId': 0x1209, 'productId': 0xB011 }, // GBLink firmware 3.0.0 and newer
     ];
     return navigator.usb.requestDevice({ 'filters': filters }).then(
       device => {
@@ -114,7 +115,8 @@ class Serial {
   }
 
   getEndpoints(interfaces) {
-    this.isNewFirmware = (this.device.vendorId === 0x2FE3);
+    this.isNewFirmware = this.device.vendorId === 0x2FE3
+        || (this.device.vendorId === 0x1209 && this.device.productId === 0xB011);
 
     interfaces.forEach(element => {
       var alternates = element.alternates;

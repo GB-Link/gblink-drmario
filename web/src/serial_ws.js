@@ -49,7 +49,7 @@ class SerialWS {
 
   static requestPort() {
     return navigator.serial.requestPort({
-      filters: [{ usbVendorId: 0x2FE3 }]
+      filters: [{ usbVendorId: 0x2FE3 }, { usbVendorId: 0x1209, usbProductId: 0xB011 }]
     });
   }
 
