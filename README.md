@@ -1,4 +1,4 @@
-# GB-DrMario 💊
+# GB-Link Dr. Mario 💊
 
 The **web client** and **server** for the online Dr. Mario project. Play Dr. Mario head-to-head on real Game Boy hardware over the internet using the GB link cable USB adapter.
 
