@@ -100,12 +100,6 @@ class Serial {
     return true;
   }
 
-  static getPorts() {
-    return navigator.usb.getDevices().then(devices => {
-      return devices;
-    });
-  }
-
   static requestPort() {
     const filters = [
       { 'vendorId': 0x239A }, // Adafruit boards

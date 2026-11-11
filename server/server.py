@@ -43,6 +43,7 @@ class Client:
         self.virus_count = 0
         self.state = self.STATE_ALIVE
         self.num_wins = 0
+        self.match_wins = 0  # wins in the current match; the GB goes back to its menu at 3
         self.gb_connected = False
         self.awaiting_link_payload = False
         self.match_event = asyncio.Event()
@@ -64,6 +65,7 @@ class Client:
     def set_winner(self):
         self.state = self.STATE_WINNER
         self.num_wins += 1
+        self.match_wins += 1
 
     async def send(self, f):
         print("Sending..")
@@ -77,6 +79,7 @@ class Client:
             "state": self.state,
             "uuid": self.uuid,
             "num_wins": self.num_wins,
+            "match_wins": self.match_wins,
             "gb_connected": self.gb_connected
         }
 
@@ -91,6 +94,12 @@ class Game:
     LINK_BYTE_GARBAGE_PREFIX = 0xFE
     LINK_BYTE_LOSE = 0xFD
     LINK_BYTE_WIN = 0xF8
+
+    # The ROM ends a match once a player has this many round wins, then
+    # returns both Game Boys to the 2P settings menu.
+    MATCH_WINS = 3
+    READY_COUNTDOWN = 10  # seconds
+    START_COUNTDOWN = 5  # seconds from the host's Start Game to the game starting
 
     def _generate_name(self):
         lobby_name = ''.join(random.choice(string.ascii_uppercase) for i in range(4))
@@ -110,6 +119,8 @@ class Game:
         self.player_selections = {}
         self.ready_clients = set()
         self.ready_timer_task = None
+        self.match_over = False
+        self.start_countdown_task = None
         try:
             selection_time = int(selection_time)
         except (TypeError, ValueError):
@@ -126,6 +137,9 @@ class Game:
             "name": self.name,
             "status": self.state,
             "users": users,
+            "match_over": self.match_over,
+            "ready_uuids": sorted(self.ready_clients),
+            "countdown_active": self.ready_timer_task is not None,
             "admin_uuid": self.admin_socket.uuid if self.admin_socket else None
         }
 
@@ -175,16 +189,26 @@ class Game:
 
     async def start_settings(self):
         print("Starting settings phase!")
+        if self.ready_timer_task:
+            self.ready_timer_task.cancel()
+            self.ready_timer_task = None
+        self.ready_clients = set()
         self.state = self.GAME_STATE_SETTINGS
         self.settings_phase = 'virus_level'
         self.settings_countdown = self.selection_time
-        
+        self.match_over = False
+
         for client in self.clients:
+            client.match_wins = 0
+            client.state = Client.STATE_ALIVE
+            # The GB menu keeps the last level/speed, so start from those.
+            prev = self.player_selections.get(client.uuid, {})
             self.player_selections[client.uuid] = {
-                'virus_level': 0,
-                'speed': 0x23,  # MED
-                'music': 0x30   # Fever
+                'virus_level': prev.get('virus_level', 0),
+                'speed': prev.get('speed', 0x23),  # MED
+                'music': prev.get('music', 0x30)   # Fever
             }
+        await self.send_gameinfo()
         
         await self.send_all({
             "type": "start_settings",
@@ -255,6 +279,18 @@ class Game:
             if self.is_matchmaking:
                 await self.start_game()
 
+    def _update_match_over(self):
+        self.match_over = any(c.match_wins >= self.MATCH_WINS for c in self.clients)
+        if self.match_over:
+            print(f"Match over in game {self.name}")
+
+    async def start_next(self):
+        # After a finished match the GBs are back in their menu, so pick settings again.
+        if self.match_over:
+            await self.start_settings()
+        else:
+            await self.start_game()
+
     def _get_client_selection(self, client):
         if client.uuid not in self.player_selections:
             # MED speed, Fever music. the GB defaults
@@ -323,14 +359,14 @@ class Game:
         if same_virus_level:
             level = admin_level
             bottle = Game.generate_bottle(level)
-            rng_sequence = Game.generate_rng_sequence(level)
+            rng_sequence = Game.generate_rng_sequence()
             await self.send_all({"type": "bottle", "bottle": bottle})
             await self.send_all({"type": "start_game", "rng_sequence": rng_sequence})
         else:
             for c in self.clients:
                 level = self.player_selections.get(c.uuid, {}).get('virus_level', 0)
                 bottle = Game.generate_bottle(level)
-                rng_sequence = Game.generate_rng_sequence(level)
+                rng_sequence = Game.generate_rng_sequence()
                 await c.send(json.dumps({"type": "bottle", "bottle": bottle}))
                 await c.send(json.dumps({"type": "start_game", "rng_sequence": rng_sequence}))
 
@@ -423,7 +459,7 @@ class Game:
 
     # Also adapted from the ROM
     @staticmethod
-    def generate_rng_sequence(virus_level=0, seed=None):
+    def generate_rng_sequence():
         def generate_rng_byte(div_value):
             result = 0
             b = div_value & 0xFF
@@ -462,17 +498,10 @@ class Game:
             
             return sequence
         
-        if seed is None:
-            initial_div = (int(time.time() * 1000) + random.randint(0, 1000)) & 0xFF
-        else:
-            initial_div = seed
-        
-        div_value = initial_div
-        
-        for i in range(3):
-            generate_sequence(div_value, 1)
-            div_value = (div_value + 1) & 0xFF
-        
+        initial_div = (int(time.time() * 1000) + random.randint(0, 1000)) & 0xFF
+        # Skip the first 3 DIV steps, as the ROM does before its real sequence.
+        div_value = (initial_div + 3) & 0xFF
+
         sequence = generate_sequence(div_value, 128)
         rng_hex = ''.join(f'{b:02X}' for b in sequence)
         return rng_hex
@@ -486,12 +515,17 @@ class Game:
             await self.check_start_settings()
         elif msg["type"] == "start_settings":
             # Check if game state is correct.
-            if self.state != self.GAME_STATE_LOBBY:
-                print("Error: Game not in lobby", self.state)
+            in_lobby = self.state == self.GAME_STATE_LOBBY
+            rematch = self.state == self.GAME_STATE_BETWEEN and self.match_over
+            if not (in_lobby or rematch):
+                print("Error: Cannot start settings", self.state)
                 return
             # Check if admin.
             if client != self.admin_socket:
                 print("Error: Not an admin.")
+                return
+            if rematch:
+                await self.host_start_countdown()
                 return
             await self.start_settings()
         elif msg["type"] == "settings_update":
@@ -537,15 +571,24 @@ class Game:
             if self.state != self.GAME_STATE_SETTINGS and self.state != self.GAME_STATE_BETWEEN:
                 print("Error: Cannot start game", self.state)
                 return
+            if self.state == self.GAME_STATE_BETWEEN and self.match_over:
+                print("Error: Match over, pick settings first")
+                return
             # Check if admin.
             if client != self.admin_socket:
                 print("Error: Not an admin.")
                 return
-            
+
+            if self.state == self.GAME_STATE_BETWEEN:
+                await self.host_start_countdown()
+                return
+            if self.start_countdown_task:
+                return
             if self.settings_timer_task:
                 self.settings_timer_task.cancel()
                 self.settings_timer_task = None
-            await self.start_game()
+            await self.send_all({"type": "countdown_started", "seconds": self.START_COUNTDOWN})
+            self.start_countdown_task = asyncio.create_task(self._start_countdown())
         elif msg["type"] == "virus_update":
             if self.state != self.GAME_STATE_RUNNING:
                 print("Game is not running. Error.")
@@ -590,6 +633,7 @@ class Game:
                 print("We have a winner!")
                 winner.set_winner()
                 await winner.send(json.dumps({"type": "win"}))
+            self._update_match_over()
             self.ready_clients = set()
             self.state = self.GAME_STATE_BETWEEN
             await self.send_gameinfo()
@@ -605,6 +649,7 @@ class Game:
                     c.set_dead()
                     await c.send(json.dumps({"type": "lose"}))
             await client.send(json.dumps({"type": "win"}))
+            self._update_match_over()
             self.ready_clients = set()
             self.state = self.GAME_STATE_BETWEEN
             await self.send_gameinfo()
@@ -612,6 +657,16 @@ class Game:
             if self.state != self.GAME_STATE_BETWEEN:
                 return
             if not self.is_matchmaking:
+                # Lobby games: the guest says they're ready, then the host starts the countdown.
+                if client == self.admin_socket:
+                    return
+                self.ready_clients.add(client.uuid)
+                await self.send_all({"type": "player_ready", "uuid": client.uuid})
+                if self.admin_socket.uuid in self.ready_clients:
+                    # Host already asked to start; go now that the guest is ready.
+                    await self.host_start_countdown()
+                else:
+                    await self.send_gameinfo()
                 return
             self.ready_clients.add(client.uuid)
             await self.send_all({"type": "player_ready", "uuid": client.uuid})
@@ -619,16 +674,40 @@ class Game:
                 if self.ready_timer_task:
                     self.ready_timer_task.cancel()
                     self.ready_timer_task = None
-                await self.start_game()
+                await self.start_next()
             elif len(self.ready_clients) == 1:
-                await self.send_all({"type": "countdown_started", "seconds": 10})
+                await self.send_all({"type": "countdown_started", "seconds": self.READY_COUNTDOWN})
                 self.ready_timer_task = asyncio.create_task(self._ready_countdown())
+
+    async def host_start_countdown(self):
+        # Lobby games: host starts the next round (or new match) once the guest is ready.
+        if self.ready_timer_task:
+            return
+        self.ready_clients.add(self.admin_socket.uuid)
+        guests = [c for c in self.clients if c != self.admin_socket]
+        if not guests or any(c.uuid not in self.ready_clients for c in guests):
+            # Wait for the guest; their ready_next starts the countdown.
+            await self.send_gameinfo()
+            return
+        await self.send_all({"type": "countdown_started", "seconds": self.READY_COUNTDOWN})
+        self.ready_timer_task = asyncio.create_task(self._ready_countdown())
+        await self.send_gameinfo()
+
+    async def _start_countdown(self):
+        try:
+            await asyncio.sleep(self.START_COUNTDOWN)
+            self.start_countdown_task = None
+            if self.state == self.GAME_STATE_SETTINGS:
+                await self.start_game()
+        except asyncio.CancelledError:
+            pass
 
     async def _ready_countdown(self):
         try:
-            await asyncio.sleep(10)
-            if self.state == self.GAME_STATE_BETWEEN and self.is_matchmaking:
-                await self.start_game()
+            await asyncio.sleep(self.READY_COUNTDOWN)
+            if self.state == self.GAME_STATE_BETWEEN:
+                self.ready_timer_task = None
+                await self.start_next()
         except asyncio.CancelledError:
             pass
 
@@ -645,6 +724,9 @@ class Game:
         if self.ready_timer_task:
             self.ready_timer_task.cancel()
             self.ready_timer_task = None
+        if self.start_countdown_task:
+            self.start_countdown_task.cancel()
+            self.start_countdown_task = None
         self.ready_clients.discard(disconnected_client.uuid)
 
         if self.state == self.GAME_STATE_RUNNING:

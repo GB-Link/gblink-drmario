@@ -33,11 +33,6 @@ class OnlineDrMario extends React.Component {
   // States where the emulated Game Boy may be reset or swapped (no lobby open)
   EmulatorFreeStates = ["Start", "Connect", "Connecting", "StateError"];
 
-  // Needs to be in sync with server
-  USER_STATE_ALIVE = 0;
-  USER_STATE_DEAD = 1;
-  USER_STATE_WINNER = 2;
-
   constructor(props) {
     super(props);
     this.state = {
@@ -51,7 +46,6 @@ class OnlineDrMario extends React.Component {
       speed: 0x23,
       uuid: "",
       admin: false,
-      gbConnected: false,
       errorMessage: "",
       currentMenu: 0,
       navigating: false,
@@ -61,7 +55,10 @@ class OnlineDrMario extends React.Component {
       playerSelections: {},
       isMatchmaking: false,
       readyCountdown: 0,
-      iAmReady: false
+      iAmReady: false,
+      matchOver: false,
+      readyUuids: [],
+      countdownActive: false
     };
     this.isMatchmaking = false;
     this.countdownInterval = null;
@@ -73,6 +70,8 @@ class OnlineDrMario extends React.Component {
     this._pendingBytes = [];
     this._gameEndSignal = null;
     this._awaitingGarbagePayloadFromGb = false;
+    this._startFromMenu = false; // next game start begins in the GB's 2P menu (no round teardown)
+    this._settingsLoopRunning = false;
     this.opponentSelectionRef = { current: { virus_level: 0, speed: 0x23, music: 0x30 } };
     this.mySelectionRef = { current: { virus_level: 0, speed: 0x23, music: 0x30 } };
     this.selectedMusicRef = { current: 0x30 };
@@ -89,10 +88,9 @@ class OnlineDrMario extends React.Component {
     });
     this.serial.getDevice().then(() => {
       this.setState({
-        state: this.StateConnect,
-        gbConnected: true
+        state: this.StateConnect
       });
-    }).catch(c => {
+    }).catch(() => {
       this.setState({
         state: this.StateStart,
         errorMessage: `Failed to connect ${kind === 'serial' ? 'serial port' : 'USB device'}`
@@ -105,7 +103,7 @@ class OnlineDrMario extends React.Component {
       this.emulator.setLocked(!this.EmulatorFreeStates.includes(this.state.state));
       // Back at the start with the emulator running: its Game Boy is still connected
       if (this.state.state === this.StateStart && this.emulator.hasGame) {
-        this.setState({ state: this.StateConnect, gbConnected: true });
+        this.setState({ state: this.StateConnect });
       }
     }
   }
@@ -142,16 +140,14 @@ class OnlineDrMario extends React.Component {
     this.serial = serial;
     this.handshakeStarted = false;
     this.setState({
-      state: this.StateConnect,
-      gbConnected: true
+      state: this.StateConnect
     });
   }
 
   handleEmulatorClose() {
     this.serial = null;
     this.setState({
-      state: this.StateStart,
-      gbConnected: false
+      state: this.StateStart
     });
   }
 
@@ -162,18 +158,6 @@ class OnlineDrMario extends React.Component {
       this.setState({ virus_count: count });
     }
     if (this.gb) this.gb.sendVirusCount(count);
-  }
-
-  setUsersWinLoseState(weWon) {
-    const myUuid = this.gb && this.gb.uuid;
-    if (!myUuid || !Array.isArray(this.state.users)) return;
-    const users = this.state.users.map((u) => ({
-      ...u,
-      state: u.uuid === myUuid
-        ? (weWon ? this.USER_STATE_WINNER : this.USER_STATE_DEAD)
-        : (weWon ? this.USER_STATE_DEAD : this.USER_STATE_WINNER)
-    }));
-    this.setState({ users });
   }
 
   startGameTimer() {
@@ -334,11 +318,17 @@ class OnlineDrMario extends React.Component {
   }
 
   startSettingsPollingLoop() {
+    if (this._settingsLoopRunning) return;
+    this._settingsLoopRunning = true;
+    this.settingsPollingTick();
+  }
+
+  settingsPollingTick() {
     const POLL_MS = 30;
 
     setTimeout(() => {
       if (this.state.state !== this.StateSettings) {
-        this.startSettingsPollingLoop();
+        this._settingsLoopRunning = false;
         return;
       }
 
@@ -358,7 +348,7 @@ class OnlineDrMario extends React.Component {
           this.serial.sendHex(sendByte);
           this.serial.readHex(1).then(() => {}).catch(() => {});
         }
-        this.startSettingsPollingLoop();
+        this.settingsPollingTick();
         return;
       }
 
@@ -385,7 +375,7 @@ class OnlineDrMario extends React.Component {
             if (currentMenu === 2 && this.musicBlastRef.current > 0) {
               this.musicBlastRef.current--;
             }
-            this.startSettingsPollingLoop();
+            this.settingsPollingTick();
           }
         });
       };
@@ -450,8 +440,19 @@ class OnlineDrMario extends React.Component {
     });
   }
 
+  // Lobby games: once the guest is ready, the host starts the countdown to the
+  // next round, or to the settings phase after a finished match.
+  handleHostNext() {
+    if (!this.gb || !this.state.admin) return;
+    if (this.state.matchOver) {
+      this.gb.sendStartSettings();
+    } else {
+      this.gb.sendStart();
+    }
+  }
+
   handleReadyNext() {
-    if (!this.gb || !this.isMatchmaking) return;
+    if (!this.gb) return;
     this.gb.sendReadyNext();
     this.setState({ iAmReady: true });
   }
@@ -473,7 +474,6 @@ class OnlineDrMario extends React.Component {
     this.gb.onerror = this.gbError.bind(this);
     this.gb.onmatchfound = this.gbMatchFound.bind(this);
     this.gb.onopponentdisconnect = this.gbOpponentDisconnect.bind(this);
-    this.gb.onplayerready = this.gbPlayerReady.bind(this);
     this.gb.oncountdownstarted = this.gbCountdownStarted.bind(this);
   }
 
@@ -516,7 +516,6 @@ class OnlineDrMario extends React.Component {
     }
 
     if (this.gb) {
-      this.gb._closedByUs = true;
       this.gb.ws.close();
       this.gb = null;
     }
@@ -531,9 +530,6 @@ class OnlineDrMario extends React.Component {
     } else {
       reconnect();
     }
-  }
-
-  gbPlayerReady(gb, uuid) {
   }
 
   gbCountdownStarted(gb, seconds) {
@@ -561,6 +557,8 @@ class OnlineDrMario extends React.Component {
       this.countdownInterval = null;
     }
     this.setState({ readyCountdown: 0, iAmReady: false });
+    const fromMenu = this._startFromMenu;
+    this._startFromMenu = false;
     this._handshakeActive = true;
     this._gameEndReported = false;
     this._pendingBytes = [];
@@ -619,7 +617,7 @@ class OnlineDrMario extends React.Component {
 
     // step 1: pump 18s to get the GB into the link cable menu
     const step1 = () => {
-      const firstReadDelay = this.isFirstGame() ? 0 : 100;
+      const firstReadDelay = fromMenu ? 0 : 100;
       sendThenRead('18', () => sendThenRead('18', step2), firstReadDelay);
     };
 
@@ -766,7 +764,17 @@ class OnlineDrMario extends React.Component {
       }).catch(fail);
     };
 
-    const waitForSerialIdle = () => new Promise(resolve => {
+    this.waitForSerialIdle().then(() => {
+      if (fromMenu) {
+        setTimeout(step1, delay);
+      } else {
+        roundEndE8Step(0);
+      }
+    });
+  }
+
+  waitForSerialIdle() {
+    return new Promise(resolve => {
       const check = () => {
         if (!this._serialCycleActive &&
             !this.serial.send_active &&
@@ -778,13 +786,21 @@ class OnlineDrMario extends React.Component {
       };
       check();
     });
-    waitForSerialIdle().then(() => {
-      if (this.isFirstGame()) {
-        setTimeout(step1, delay);
-      } else {
-        roundEndE8Step(0);
-      }
-    });
+  }
+
+  // After a 3-win match the GB shows its results until the master sends E8,
+  // then returns to the 2P virus level menu. Extra E8s would count as button
+  // presses there, so send a few, then idle bytes while it gets to the menu.
+  leaveMatchResults() {
+    const sendBytes = (bytes, gapMs) => bytes.reduce((p, hex) => p.then(() =>
+      this.serial.sendHex(hex)
+        .then(() => this.serial.readHex(1, 500))
+        .catch(() => {})
+        .then(() => new Promise(r => setTimeout(r, gapMs)))
+    ), Promise.resolve());
+    return this.waitForSerialIdle()
+      .then(() => sendBytes(['E8', 'E8', 'E8'], 30))
+      .then(() => sendBytes(new Array(12).fill('00'), 30));
   }
 
   gbUserInfo(gb) {
@@ -801,7 +817,10 @@ class OnlineDrMario extends React.Component {
     const me = this.gb && this.gb.uuid && users.find((u) => u.uuid === this.gb.uuid);
     const nextState = {
       game_code: gb.game_name,
-      users
+      users,
+      matchOver: !!gb.match_over,
+      readyUuids: Array.isArray(gb.ready_uuids) ? gb.ready_uuids : [],
+      countdownActive: !!gb.countdown_active
     };
     if (typeof gb.admin === 'boolean') {
       nextState.admin = gb.admin;
@@ -826,6 +845,29 @@ class OnlineDrMario extends React.Component {
   }
 
   gbStartSettings(gb, data) {
+    this._startFromMenu = true;
+    if (this.countdownInterval) {
+      clearInterval(this.countdownInterval);
+      this.countdownInterval = null;
+    }
+    this.setState({ readyCountdown: 0, iAmReady: false });
+    if (this.state.state === this.StateFinished && this.serial) {
+      // New match after a finished one: get the GB from its results screen to the menu first.
+      this._handshakeActive = true;
+      this._gameEndSignal = null;
+      this._pendingBytes = [];
+      this._awaitingGarbagePayloadFromGb = false;
+      this.setState({ state: this.StateStartingGame, matchOver: false });
+      this.leaveMatchResults().then(() => {
+        this._handshakeActive = false;
+        this.enterSettings(data);
+      });
+      return;
+    }
+    this.enterSettings(data);
+  }
+
+  enterSettings(data) {
     const raw = this.state.music != null ? (typeof this.state.music === 'number' ? this.state.music : parseInt(this.state.music, 16)) : 0x30;
     const musicVal = (raw >= 0x30 && raw <= 0x32) ? raw : 0x30;
     this.mySelectionRef.current = {
@@ -839,7 +881,11 @@ class OnlineDrMario extends React.Component {
       settingsPhase: data.phase,
       settingsCountdown: data.countdown,
       currentMenu: 0,
-      music: musicVal
+      navigating: false,
+      navigationQueue: [],
+      navigationTargetMenu: null,
+      music: musicVal,
+      matchOver: false
     });
     this.startSettingsPollingLoop();
     if (this.syncIntervalId != null) clearInterval(this.syncIntervalId);
@@ -920,15 +966,6 @@ class OnlineDrMario extends React.Component {
     });
   }
 
-  isFirstGame() {
-    for (var u of this.state.users) {
-      if (u.num_wins > 0) {
-        return false;
-      }
-    }
-    return true;
-  }
-
   handleMusicSelect(music) {
     if(this.gb && this.state.admin) {
       this.selectedMusicRef.current = music;
@@ -948,14 +985,56 @@ class OnlineDrMario extends React.Component {
       });
       return;
     }
+    // The server counts down, then sends start_game; stay on the settings screen until then.
     if (this.state.admin) {
-      if (this.syncIntervalId != null) {
-        clearInterval(this.syncIntervalId);
-        this.syncIntervalId = null;
-      }
       this.gb.sendStart();
     }
-    this.setState({ state: this.StateStartingGame });
+  }
+
+  // Finished screen buttons for lobby (private) games
+  renderLobbyNext() {
+    const myUuid = this.state.uuid || (this.gb && this.gb.uuid);
+    const ready = this.state.readyUuids || [];
+    const others = (this.state.users || []).filter((u) => u.uuid !== myUuid);
+    const counting = this.state.countdownActive || this.state.readyCountdown > 0;
+    const what = this.state.matchOver ? 'New match settings' : 'Next game';
+    const note = (text) => <p style={{ color: 'white', marginTop: '0.75rem' }}>{text}</p>;
+
+    if (this.state.admin) {
+      // Host: one button. If the guest isn't ready yet, the countdown starts once they are.
+      const hostRequested = ready.includes(myUuid);
+      const guestName = others.length > 0 ? others[0].name : 'the other player';
+      return (
+        <div>
+          <button
+            onClick={() => this.handleHostNext()}
+            className="btn btn-lg btn-secondary"
+            disabled={hostRequested || counting}
+          >
+            Start Next Game
+          </button>
+          {this.state.readyCountdown > 0
+            ? note(`${what} starting in ${this.state.readyCountdown}s...`)
+            : (hostRequested && !counting && note(`Waiting for ${guestName}...`))}
+        </div>
+      );
+    }
+
+    const iAmReady = ready.includes(myUuid);
+    return (
+      <div>
+        <button
+          onClick={() => this.handleReadyNext()}
+          className="btn btn-lg btn-secondary"
+          disabled={iAmReady}
+        >
+          I'm Ready
+        </button>
+        {this.state.readyCountdown > 0
+          ? note(`${what} starting in ${this.state.readyCountdown}s...`)
+          : (iAmReady && note('Waiting for the host to start...'))}
+      </div>
+    );
   }
 
   render() {
@@ -1061,6 +1140,7 @@ class OnlineDrMario extends React.Component {
               admin={this.state.admin}
               isMatchmaking={this.state.isMatchmaking}
               onMusicSelect={(music) => this.handleMusicSelect(music)}
+              startCountdown={this.state.readyCountdown}
               onStartGame={() => this.handleStartGame()}/>
         </div>)
       } else if(this.state.state === this.StateStartingGame) {
@@ -1077,7 +1157,15 @@ class OnlineDrMario extends React.Component {
       } else if(this.state.state === this.StateFinished) {
         return (<div className="connect">
             <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} uuid={this.state.uuid} isMatchmaking={this.state.isMatchmaking} />
-            <h2>Game finished!</h2>
+            <h2>{this.state.matchOver ? 'Match over!' : 'Game finished!'}</h2>
+            {this.state.matchOver && (() => {
+              const winner = (this.state.users || []).find((u) => (u.match_wins ?? 0) >= 3);
+              return (
+                <p style={{ color: 'white' }}>
+                  {winner ? `${winner.name} wins the match! ` : ''}Pick new settings for the next match.
+                </p>
+              );
+            })()}
             {this.state.isMatchmaking ? (
               <div>
                 {this.state.readyCountdown > 0 && (
@@ -1088,16 +1176,12 @@ class OnlineDrMario extends React.Component {
                   className="btn btn-lg btn-secondary"
                   disabled={this.state.iAmReady}
                 >
-                  {this.state.iAmReady ? 'Waiting for opponent...' : 'Start Next Round'}
+                  {this.state.iAmReady
+                    ? 'Waiting for opponent...'
+                    : (this.state.matchOver ? 'Next Match (new settings)' : 'Start Next Round')}
                 </button>
               </div>
-            ) : (
-              this.state.admin ? (
-                <button onClick={(e) => this.handleStartGame()} className="btn btn-lg btn-secondary">Start next game!</button>
-              ) : (
-                <p style={{ color: 'white' }}>Waiting for other player to start next game.</p>
-              )
-            )}
+            ) : this.renderLobbyNext()}
           </div>)
       } else if(this.state.state === this.StateOpponentDisconnect) {
         return (

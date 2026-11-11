@@ -38,7 +38,8 @@ class SettingsPhase extends React.Component {
   }
 
   render() {
-    const { phase, countdown, mySelection: myProp, opponentSelection: oppProp, admin, isMatchmaking } = this.props;
+    const { phase, countdown, mySelection: myProp, opponentSelection: oppProp, admin, isMatchmaking, startCountdown } = this.props;
+    const starting = !isMatchmaking && startCountdown > 0;
     const defaultSelection = { virus_level: 0, speed: 0x23, music: 0x30 };
     const mySelection = { ...defaultSelection, ...(myProp || {}) };
     const opponentSelection = { ...defaultSelection, ...(oppProp || {}) };
@@ -127,7 +128,11 @@ class SettingsPhase extends React.Component {
           </p>
         )}
 
-        {phase === 'music' && !isMatchmaking && admin && (
+        {starting && (
+          <p className="start-game-waiting">Game starting in {startCountdown}s...</p>
+        )}
+
+        {phase === 'music' && !isMatchmaking && admin && !starting && (
           <button 
             className="btn btn-lg btn-secondary start-game-button"
             onClick={() => this.handleStartGame()}
@@ -136,7 +141,7 @@ class SettingsPhase extends React.Component {
           </button>
         )}
 
-        {phase === 'music' && !isMatchmaking && !admin && (
+        {phase === 'music' && !isMatchmaking && !admin && !starting && (
           <p className="start-game-waiting">Waiting for admin to start game...</p>
         )}
       </div>

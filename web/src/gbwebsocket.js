@@ -6,15 +6,6 @@ const fromHexString = hexString =>
 
 
 class GBWebsocket {
-  // Needs to be in sync with server!!!
-  GAME_STATE_LOBBY = 0
-  GAME_STATE_SETTINGS = 1
-  GAME_STATE_RUNNING = 2
-  GAME_STATE_BETWEEN = 3
-  GAME_STATE_FINISHED = 4
-  GAME_STATE_ERROR = 9998
-  GAME_STATE_NONE = 9999
-
   constructor(url, name, selectionTime = null) {
     this.ws = new WebSocket(url);
     this.ws.onmessage = (function(event) {
@@ -25,23 +16,13 @@ class GBWebsocket {
       console.error("WebSocket error:", error);
       this.onerror(this, error);
     }).bind(this);
-    
-    this.ws.onclose = (function(event) {
-      this.onclose(this, event);
-    }).bind(this);
 
     this.onconnected = function() {}
     
     this.onerror = function() {}
     
-    this.onclose = function() {}
-
     this.oninfoupdate = function() {}
     this.ongamestart = function() {}
-
-    this.ongameupdate = function() {}
-
-    this.ongameend = function() {}
 
     this.onuserinfo = function() {}
 
@@ -67,18 +48,15 @@ class GBWebsocket {
 
     this.onopponentdisconnect = function() {}
 
-    this.onplayerready = function() {}
-
     this.oncountdownstarted = function() {}
 
     this.admin = false;
     this.name = name;
     this.selectionTime = selectionTime;
     this.game_name = "YOU SHOULD NEVER SEE THIS"; // famous last words
-    this.game_status = this.GAME_STATE_NONE;
     this.users = []
     this.uuid = ""
-    this._closedByUs = false;
+    this.match_over = false;
     this.waitForConnection();
   }
 
@@ -91,11 +69,6 @@ class GBWebsocket {
       msg.selection_time = this.selectionTime;
     }
     this.ws.send(JSON.stringify(msg));
-  }
-
-  getOtherUsers() {
-    var res = this.users.filter(u => u.uuid != this.uuid);
-    return res;
   }
 
   waitForConnection() {
@@ -182,7 +155,6 @@ class GBWebsocket {
         "type": "cancel_matchmaking"
       }));
     }
-    this._closedByUs = true;
     this.ws.close();
   }
 
@@ -209,8 +181,10 @@ class GBWebsocket {
     switch(message.type) {
       case "game_info":
         this.game_name = message.name;
-        this.game_status = message.status ?? message.state;
         this.users = message.users;
+        this.match_over = !!message.match_over;
+        this.ready_uuids = Array.isArray(message.ready_uuids) ? message.ready_uuids : [];
+        this.countdown_active = !!message.countdown_active;
         if (message.admin_uuid) {
           this.admin = message.admin_uuid === this.uuid;
         }
@@ -245,16 +219,8 @@ class GBWebsocket {
         this.rng_sequence = fromHexString(String(message.rng_sequence));
         this.ongamestart(this);
         break;
-      case "game_update":
-        this.ongameupdate(this);
-        break;
       case "error":
-        this.state = this.GAME_STATE_ERROR;
-        this.ongameupdate(this);
-        break;
-      case "end":
-        this.state = this.GAME_STATE_FINISHED;
-        this.ongameend(this);
+        console.warn("Server error:", message.msg);
         break;
       case "win":
         this.onwin(this);
@@ -279,8 +245,7 @@ class GBWebsocket {
         this.onopponentdisconnect(this);
         break;
       case "player_ready":
-        this.onplayerready(this, message.uuid);
-        break;
+        break; // readiness also arrives in game_info's ready_uuids
       case "countdown_started":
         this.oncountdownstarted(this, message.seconds);
         break;

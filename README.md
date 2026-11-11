@@ -75,11 +75,6 @@ python server.py
 
 To enable TLS set `USE_SSL=true` and fill in `FULLCHAIN_CERT_PATH` and `PRIVKEY_PATH` in `.env`.
 
-## TODO
-
-- Improve the post-session flow after three consecutive wins.
-- Support different GB Link firmwares.
-
 ## Support
 
 If you find this project useful, consider supporting ongoing development on Ko-fi.
